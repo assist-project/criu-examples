@@ -1,7 +1,7 @@
 # criu-example
 A repository containing examples on using the snapshotting framework CRIU.
 A treasure trove of examples is found in CRIU's repository [here][CRIU_EXAMPLES]. 
-The [website][https://criu.org/Main_Page] documenting CRIU is not entirely up-to-date/complete.
+The [website][CRIU_DOC] documenting CRIU is not entirely up-to-date/complete.
 Hence, often times I found answers to my questions by scouring the examples, rather than by searching the website.
 
 ## Notes on use
