@@ -1,0 +1,1 @@
+int run_adapter(int s_pid, int server_port, char *command_socket_name);
