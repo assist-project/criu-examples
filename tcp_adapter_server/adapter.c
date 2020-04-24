@@ -142,11 +142,11 @@ int run_adapter(int s_pid, int server_port, char *command_socket_name) {
     connect_to_server(&server_data_sockfd, server_port);
 
     while(!stop) {
-    cmd_data_sockfd = accept(cmd_sockfd, NULL, NULL);
-    if (cmd_data_sockfd == -1) {
-        perror("(adapter) ERROR accept");
-        goto error;
-    }
+        cmd_data_sockfd = accept(cmd_sockfd, NULL, NULL);
+        if (cmd_data_sockfd == -1) {
+            perror("(adapter) ERROR accept");
+            goto error;
+        }
 
         for(;;) {
             show_linger(server_data_sockfd, "in server loop");
@@ -204,9 +204,9 @@ int run_adapter(int s_pid, int server_port, char *command_socket_name) {
     }
     printf("(adapter) Main has terminated all communication %d\n", server_data_sockfd);
     int status;
+    close(server_data_sockfd);
     kill(s_pid, SIGKILL);
     waitpid(s_pid, &status, 0);
-    close(server_data_sockfd);
     printf("(adapter) closing command data and listening sockets\n");
     close(cmd_data_sockfd);
     close(cmd_sockfd);

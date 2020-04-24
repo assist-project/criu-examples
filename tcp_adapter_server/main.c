@@ -29,6 +29,7 @@
 #include "server.h"
 
 #define SUCC_ECODE	42
+#define MAX_ATTEMPTS 5 /* Maximum attempts to connect to adapter*/
 
 static int s_pid = 0; /* PID of server process */
 static int a_pid = 0; /* PID of adapter process */
@@ -50,7 +51,7 @@ void error(char *msg)
 
 void connect_to_adapter(int *data_socket, char *socket_name) {
     struct sockaddr_un addr;
-    int ret;
+    int ret=-1, attempts = 0;
     char buffer[BUFFER_SIZE];
     /* Create local socket. */
 
@@ -69,7 +70,11 @@ void connect_to_adapter(int *data_socket, char *socket_name) {
     /* Connect socket to socket address */
     addr.sun_family = AF_UNIX;
     strncpy(addr.sun_path, socket_name, sizeof(addr.sun_path) - 1);
-    ret = connect((*data_socket), (const struct sockaddr *) &addr, sizeof(struct sockaddr_un));
+    while (ret == -1 && attempts < MAX_ATTEMPTS) {
+        ret = connect((*data_socket), (const struct sockaddr *) &addr, sizeof(struct sockaddr_un));
+        attempts++;
+        usleep(10000);
+    } 
     if (ret == -1) {
         perror("ERROR connecting.\n");
         exit(EXIT_FAILURE);
@@ -114,152 +119,141 @@ void check(int ret_val, char *operation) {
     }
 }
 
-int main() {
+int main(int argc, char **argv) {
     int dump_fd, status;
     int sec_sleep = 5;
     char dump_dir [] = "dump";
     int leave_running = 0;
-    int  ret;
+    int ret, with_bkp=0;
+
+    // it is necessary to eliminate TW states, otherwise restoring will not work
+    system("sysctl net.ipv4.tcp_max_tw_buckets=0");
+
+    // enable breakpoints
+    if (argc == 2 && strcmp(argv[1], "-b")) {
+        with_bkp = 1;
+    }
 
     a_pid = fork();
     printf("a_pid=%d\n", a_pid);
 
     if (a_pid < 0) {
         error("ERROR forking");
-    } else {
-        if (!a_pid) {
-            printf("Running adapter\n");
-            if (setsid() < 0) {
-			    printf("Fail signal\n");
-                exit(EXIT_FAILURE);
-            }
-            s_pid = fork();
-
-            if (s_pid>0) {
-                run_server(SERVER_PORT);
-                exit(EXIT_SUCCESS);
-            }
-
-            run_adapter(s_pid, SERVER_PORT, SOCKET_NAME);
-            //close(STDIN_FILENO);
-		    //close(STDOUT_FILENO); 
-		    //close(STDERR_FILENO);
-		    
-            return EXIT_SUCCESS;
-        } 
-        else {
-
-            // // create the target folder
-            if(mkdir(dump_dir, 0777) && errno != EEXIST) {
-                error("ERROR Failed to create dump directory");
-            }
-            if ( (dump_fd=open(dump_dir, __O_DIRECTORY | __O_PATH)) < 0) {
-                error("ERROR Failed to retrieve file descriptor");
-            }
-
-            sleep(1);
-            connect_to_adapter(&cmd_sockfd, SOCKET_NAME);
-
-            send_num(cmd_sockfd, 0);
-            send_num(cmd_sockfd, 1);
-            
-            // printf("Sleeping for %d seconds\n", sec_sleep);
-            // sleep(sec_sleep);
-
-            // //kill(a_pid, SIGUSR2);
-            // waitpid(a_pid, NULL, 0);
-          //  send_cmd(cmd_sockfd, STOP_CMD);
-            close(cmd_sockfd);
-          //  unlink(SOCKET_NAME);
-          //  waitpid(a_pid, NULL, 0);
-            getchar();
-         //   exit(0);
-
-            printf("Dumping server\n");
-            check(criu_init_opts(), "init_opts");
-            criu_set_pid(a_pid);
-            criu_set_images_dir_fd(dump_fd);
-            criu_set_leave_running(leave_running);
-            criu_set_log_level(4);
-            criu_set_log_file("dump.log");
-            criu_set_tcp_established(1); /* this is necessary, since at the moment of dumping TCP connection was in established state*/
-            criu_set_ext_unix_sk(1);
-            criu_set_shell_job(1);
-            check(criu_dump(), "dump");
-            printf("Dumped successfully\n");
-
-            // /* Unfortunately, leaving the server running prevents us from restoring the connection */
-            // if (leave_running) {
-            //     printf("Left server running\n");
-            //     send_num(sockfd, 4);
-            //     send_num(sockfd, 5);
-            //     send_num(sockfd, 6);
-            //     send_num(sockfd, 7);
-            //     printf("Killing server\n");
-            //     //close(sockfd);
-            // }
-            
-            waitpid(a_pid, NULL, 0); /* we have to wait for the server process to stop, otherwise restoring will fail */
-            printf("Sleeping for 1 second\n");
-            printf("(bkp) After dump, before first restore\n");
-            getchar(); // after dump, before fr
-
-            printf("Restoring for the first time\n");
-            check(criu_init_opts(), "init_opts");
-            criu_set_log_level(4);
-            criu_set_images_dir_fd(dump_fd);
-            criu_set_log_file("restore1.log");
-            criu_set_tcp_established(1);
-            criu_set_ext_unix_sk(1);
-            criu_set_shell_job(1);
-            criu_set_pid(s_pid);
-            int pid = criu_restore_child();
-            if (pid <= 0) {
-                printf("Restoration failed\n");
-                close(cmd_sockfd);
-                return EXIT_FAILURE;
-            }
-            printf("   `- Restore returned pid %d\n", pid);
-
-            printf("Sending follow-up numbers\n");
-            connect_to_adapter(&cmd_sockfd, SOCKET_NAME);
-            send_num(cmd_sockfd, 2);
-            send_num(cmd_sockfd, 3);
-            // send_num(sockfd, 6);
-            // close(sockfd);
-            // waitpid(s_pid, NULL, 0);
-            printf("(bkp) Telling adapter to stop, and waiting for it to exit\n");
-            getchar();
-            send_cmd(cmd_sockfd, STOP_CMD);
-            close(cmd_sockfd);
-            waitpid(a_pid, &status, 0);
-
-            printf("(bkp) After killing, before second restore\n");
-            getchar();
-
-            printf("Restoring for a second time\n");
-            criu_set_log_file("restore2.log");
-            pid = criu_restore_child();
-            if (pid <= 0) {
-                printf("Restoration failed\n");
-                close(cmd_sockfd);
-                return EXIT_FAILURE;
-            }
-            printf("   `- Restore returned pid %d\n", pid);
-
-            printf("Sending follow-up numbers again\n");
-            connect_to_adapter(&cmd_sockfd, SOCKET_NAME);
-            sleep(1);
-            send_num(cmd_sockfd, 2);
-            getchar();
-            send_num(cmd_sockfd, 3);
-            send_cmd(cmd_sockfd, STOP_CMD);
-
-            printf("We are done here");
-            close(cmd_sockfd);
-            waitpid(a_pid, &status, 0);
-            unlink(SOCKET_NAME);
+    } 
+    if (!a_pid) {
+        printf("Running adapter in separate session\n");
+        if (setsid() < 0) {
+		    printf("Fail signal\n");
+            exit(EXIT_FAILURE);
         }
+
+        s_pid = fork();
+        if (s_pid>0) {
+            run_server(SERVER_PORT);
+            exit(EXIT_SUCCESS);
+        }
+        run_adapter(s_pid, SERVER_PORT, SOCKET_NAME);
+        //close(STDIN_FILENO);
+		//close(STDOUT_FILENO); 
+		//close(STDERR_FILENO);
+		
+        exit(EXIT_SUCCESS);
+    } 
+
+    // create the target folder
+    if(mkdir(dump_dir, 0777) && errno != EEXIST) 
+        error("ERROR Failed to create dump directory");
+    if ( (dump_fd=open(dump_dir, __O_DIRECTORY | __O_PATH)) < 0) 
+        error("ERROR Failed to retrieve file descriptor");
+    
+    connect_to_adapter(&cmd_sockfd, SOCKET_NAME);
+    send_num(cmd_sockfd, 0);
+    send_num(cmd_sockfd, 1);
+    close(cmd_sockfd);
+    
+    if (with_bkp) {
+        printf("(bkp) Before first dump\n");
+        getchar();
     }
-    return 0; 
+    
+    printf("Dumping server\n");
+    check(criu_init_opts(), "init_opts");
+    criu_set_pid(a_pid);
+    criu_set_images_dir_fd(dump_fd);
+    criu_set_leave_running(leave_running);
+    criu_set_log_level(4);
+    criu_set_log_file("dump.log");
+    criu_set_tcp_established(1); /* Necessary since at the moment of dumping, the TCP connection between adapter and server is in the ESTABLISHED state. */
+    criu_set_ext_unix_sk(1); /* Necessary since we have a UNIX socket connection with the dumpee. */
+    criu_set_shell_job(1); /* Necessary unless we close STDIN/STDOUT/STDERR */
+    check(criu_dump(), "dump");
+    printf("Dumped successfully\n");
+    waitpid(a_pid, NULL, 0); /* we have to wait for the server process to stop, otherwise restoring will fail */
+    
+    if (with_bkp) {
+        printf("(bkp) After dump, before first restore\n");
+        getchar(); // after dump, before fr
+    }
+    
+    printf("Restoring for the first time\n");
+    check(criu_init_opts(), "init_opts");
+    criu_set_log_level(4);
+    criu_set_images_dir_fd(dump_fd);
+    criu_set_log_file("restore1.log");
+    criu_set_tcp_established(1);
+    criu_set_ext_unix_sk(1);
+    criu_set_shell_job(1);
+    criu_set_pid(s_pid);
+    int pid = criu_restore_child();
+    if (pid <= 0) {
+        printf("Restoration failed\n");
+        goto error;
+    }
+    printf("   `- Restore returned pid %d\n", pid);
+    printf("Sending follow-up numbers\n");
+    connect_to_adapter(&cmd_sockfd, SOCKET_NAME);
+    send_num(cmd_sockfd, 2);
+    send_num(cmd_sockfd, 3);
+
+    if (with_bkp) {
+        printf("(bkp) Before stopping adapter/server\n");
+        getchar();
+    }
+    
+    printf("Telling adapter to stop, and waiting for it to exit\n");
+    send_cmd(cmd_sockfd, STOP_CMD);
+    close(cmd_sockfd);
+    waitpid(a_pid, &status, 0);
+
+    if (with_bkp) {
+        printf("(bkp) After killing, before second restore\n");
+        getchar();
+    }
+    
+    printf("Restoring for a second time\n");
+    criu_set_log_file("restore2.log");
+    pid = criu_restore_child();
+    if (pid <= 0) {
+        printf("Restoration failed\n");
+        goto error;
+    }
+    
+    printf("   `- Restore returned pid %d\n", pid);
+    printf("Sending follow-up numbers again\n");
+    connect_to_adapter(&cmd_sockfd, SOCKET_NAME);
+    send_num(cmd_sockfd, 2);
+    send_num(cmd_sockfd, 3);
+    send_cmd(cmd_sockfd, STOP_CMD);
+    printf("We are done here");
+    close(cmd_sockfd);
+    waitpid(a_pid, &status, 0);
+    unlink(SOCKET_NAME);
+    return EXIT_SUCCESS;
+
+    error:
+    close(cmd_sockfd);
+    kill(SIGKILL, a_pid);
+    waitpid(a_pid, &status, 0);
+    unlink(SOCKET_NAME);
+    return EXIT_FAILURE;
 }
