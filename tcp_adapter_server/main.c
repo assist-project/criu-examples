@@ -122,17 +122,18 @@ void check(int ret_val, char *operation) {
 int main(int argc, char **argv) {
     int dump_fd, status;
     int sec_sleep = 5;
-    char dump_dir [] = "dump";
+    char dump_dir [] = "dump", dummy_dump_dir [] = "dummy-dump";
     int leave_running = 0;
-    int ret, with_bkp=0;
+    int ret, with_bkp=0, dummy_dump=1;
 
-    // it is necessary to eliminate TW states, otherwise restoring will not work
+    // it is necessary to eliminate TW states, otherwise restoring after kill will not work
     system("sysctl net.ipv4.tcp_max_tw_buckets=0");
 
     // enable breakpoints
     if (argc == 2 && strcmp(argv[1], "-b")) {
         with_bkp = 1;
     }
+    with_bkp = 1;
 
     a_pid = fork();
     printf("a_pid=%d\n", a_pid);
@@ -244,7 +245,7 @@ int main(int argc, char **argv) {
     send_num(cmd_sockfd, 2);
     send_num(cmd_sockfd, 3);
     send_cmd(cmd_sockfd, STOP_CMD);
-    printf("We are done here");
+    printf("We are done here\n");
     close(cmd_sockfd);
     waitpid(a_pid, &status, 0);
     unlink(SOCKET_NAME);

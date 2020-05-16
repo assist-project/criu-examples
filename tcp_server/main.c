@@ -24,7 +24,8 @@
 #include <fcntl.h>
 #include <signal.h>
 
-#define SERVER_PORT 12346
+#define SERVER_PORT 12345
+#define CLIENT_PORT 30000
 
 void do_stuff_server(int); /* function prototype */
 
@@ -38,12 +39,12 @@ void error(char *msg)
         waitpid(s_pid, NULL, 0);
     }
     perror(msg);
-    exit(1);
+    exit(EXIT_FAILURE);
 }
 
 int run_server()
 {
-    int sockfd, newsockfd, portno, clilen, pid, option;
+    int sockfd, newsockfd, portno, clilen, pid, option=1;
     struct sockaddr_in serv_addr, cli_addr;
     sockfd = socket(AF_INET, SOCK_STREAM, 0);
     if (sockfd < 0) 
@@ -64,14 +65,14 @@ int run_server()
         error("ERROR on binding");
     listen(sockfd,5);
     clilen = sizeof(cli_addr);
-  //   while (1) {
+    while (1) {
         newsockfd = accept(sockfd, 
             (struct sockaddr *) &cli_addr, &clilen);
         if (newsockfd < 0) 
             error("ERROR on accept");
         do_stuff_server(newsockfd);
         close(newsockfd);
-//     } /* end of while */
+    } /* end of while */
      return 0; 
 }
 
@@ -111,7 +112,8 @@ void do_stuff_server (int sock)
 }
 
 void connect_to_server(int *sockfd) {
-    struct sockaddr_in servaddr, cli; 
+    struct sockaddr_in servaddr, claddr; 
+    int option = 1;
   
     // socket create and varification 
     *sockfd = socket(AF_INET, SOCK_STREAM, 0); 
@@ -119,6 +121,20 @@ void connect_to_server(int *sockfd) {
         error("socket creation failed...\n");  
     else
         printf("Socket successfully created..\n"); 
+
+    if(setsockopt(*sockfd,SOL_SOCKET,(SO_REUSEPORT | SO_REUSEADDR),(char*)&option,sizeof(option)) < 0)
+    {
+        printf("setsockopt failed\n");
+        close(*sockfd);
+        exit(EXIT_FAILURE);
+    }
+
+    bzero((char *) &claddr, sizeof(claddr));
+    claddr.sin_family = AF_INET;
+    claddr.sin_addr.s_addr = INADDR_ANY;
+    claddr.sin_port = htons(CLIENT_PORT);
+    if (bind(*sockfd, (struct sockaddr *) &claddr, sizeof(claddr)) < 0)
+        error("ERROR on binding");
 
     bzero(&servaddr, sizeof(servaddr)); 
   
@@ -128,11 +144,14 @@ void connect_to_server(int *sockfd) {
     servaddr.sin_port = htons(SERVER_PORT); 
   
     // connect the client socket to server socket 
-    if (connect(*sockfd, (struct sockaddr *)&servaddr, sizeof(servaddr)) != 0) { 
-        error("connection with the server failed...\n"); 
-    } 
-    else
-        printf("connected to the server..\n"); 
+    for (int i=0; i<5; i++) {
+        if (connect(*sockfd, (struct sockaddr *)&servaddr, sizeof(servaddr)) == 0) { 
+            printf("connected to the server..\n"); 
+            return;
+        } 
+        sleep(1);
+    }
+    error("connection with the server failed...\n");         
 }
 
 void send_num(int sockfd, int i) {
@@ -158,15 +177,37 @@ void check(int ret_val, char *operation) {
         if (s_pid) {
             kill(s_pid, SIGKILL);
         }
-        exit(-1);
+        exit(EXIT_FAILURE);
     }
 }
 
+void config_restore(int img_fd) {
+    check(criu_init_opts(), "init_opts");
+    criu_set_pid(s_pid);
+    criu_set_log_level(4);
+    criu_set_images_dir_fd(img_fd);
+    criu_set_log_file("restore.log");
+    criu_set_tcp_established(1);
+    criu_set_shell_job(1);
+}
+
+void config_dump(int img_fd) {
+    check(criu_init_opts(), "init_opts");
+    criu_set_pid(s_pid);
+    criu_set_images_dir_fd(img_fd);
+    criu_set_leave_running(0);
+    criu_set_log_level(4);
+    criu_set_log_file("dump.log");
+    criu_set_tcp_established(1); /* this is necessary, since at the moment of dumping TCP connection was in established state*/
+    criu_set_shell_job(1);
+}
+
 int main() {
-    int dump_fd, sockfd, status;
+    int dump_fd, dummy_dump_fd, sockfd, status;
     int sec_sleep = 5;
-    char dump_dir [] = "dump";
-    int leave_running = 0;
+    char dump_dir [] = "dump", dummy_dump_dir [] = "dummy_dump";
+    int with_bkp = 1;
+    int dummy_dump = 1;
 
     s_pid = fork();
 
@@ -179,7 +220,7 @@ int main() {
 		    //close(STDOUT_FILENO); 
 		    close(STDERR_FILENO);
             run_server();
-            return 0;
+            return EXIT_SUCCESS;
         } 
         else {
 
@@ -196,50 +237,42 @@ int main() {
                 error("ERROR Failed to retrieve file descriptor");
             }
 
+            if (dummy_dump) {
+                if(mkdir(dummy_dump_dir, 0777) && errno != EEXIST) {
+                    error("ERROR Failed to create dump directory");
+                }
+
+                if ( (dummy_dump_fd=open(dummy_dump_dir, __O_DIRECTORY | __O_PATH)) < 0) {
+                    error("ERROR Failed to retrieve file descriptor");
+                }
+            }
+
+
+            sleep(1);
             connect_to_server(&sockfd);
             send_num(sockfd, 0);
             send_num(sockfd, 1);
             send_num(sockfd, 2);
             send_num(sockfd, 3);
 
-            printf("Sleeping for %d seconds\n", sec_sleep);
-            sleep(sec_sleep);
-            
-            printf("Dumping server\n");
-            check(criu_init_opts(), "init_opts");
-            criu_set_pid(s_pid);
-            criu_set_images_dir_fd(dump_fd);
-            criu_set_leave_running(leave_running);
-            criu_set_log_level(4);
-            criu_set_log_file("dump.log");
-            criu_set_tcp_established(1); /* this is necessary, since at the moment of dumping TCP connection was in established state*/
-            criu_set_shell_job(1);
-            check(criu_dump(), "dump");
-            printf("Dumped successfully\n");
-
-            /* Unfortunately, leaving the server running prevents us from restoring the connection */
-            if (leave_running) {
-                printf("Left server running\n");
-                send_num(sockfd, 4);
-                send_num(sockfd, 5);
-                send_num(sockfd, 6);
-                send_num(sockfd, 7);
-                printf("Killing server\n");
-                close(sockfd);
+            if (with_bkp) {
+                printf("(bkp) Before dumping\n");
+                getchar();
             }
             
+            printf("Dumping server\n");
+            config_dump(dump_fd);
+            check(criu_dump(), "dump");
+            printf("Dumped successfully\n");
+            
             waitpid(s_pid, NULL, 0); /* we have to wait for the server process to stop, otherwise restoring will fail */
-            printf("Sleeping for 1 second\n");
-            sleep(1);
+            if (with_bkp) {
+                printf("(bkp) Before restore\n");
+                getchar();
+            }
 
             printf("Now restoring\n");
-            check(criu_init_opts(), "init_opts");
-            criu_set_log_level(4);
-            criu_set_images_dir_fd(dump_fd);
-            criu_set_log_file("restore.log");
-            criu_set_tcp_established(1);
-            criu_set_shell_job(1);
-            criu_set_pid(s_pid);
+            config_restore(dump_fd);
             int pid = criu_restore_child();
             if (pid <= 0) {
                 printf("Restoration failed\n");
@@ -248,12 +281,44 @@ int main() {
             }
             printf("   `- Restore returned pid %d\n", pid);
 
+            if (with_bkp) {
+                printf("(bkp) After restore\n");
+                getchar();
+            }
+
+            send_num(sockfd, 4);
+            send_num(sockfd, 5);
+            send_num(sockfd, 6);
+            
+            //close(sockfd);
+            if (!dummy_dump) {
+                kill(s_pid, SIGKILL);
+                waitpid(s_pid, NULL, 0);
+            } else {
+                config_dump(dummy_dump_fd);
+                check(criu_dump(), "dump");
+                waitpid(s_pid, NULL, 0); /* we have to wait for the server process to stop, otherwise restoring will fail */
+            }
+
+            if (with_bkp) {
+                printf("(bkp) Before second restore\n");
+                getchar();
+            }
+            
+            config_restore(dump_fd);
+            pid = criu_restore_child();
+            if (pid <= 0) {
+                printf("Restoration failed\n");
+                close(sockfd);
+                return -1;
+            }
+            printf("   `- Restore returned pid %d\n", pid);
             send_num(sockfd, 4);
             send_num(sockfd, 5);
             send_num(sockfd, 6);
             close(sockfd);
+            kill(s_pid, SIGKILL);
             waitpid(s_pid, NULL, 0);
-
         }
     }
     return 0; 

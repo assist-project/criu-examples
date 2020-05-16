@@ -122,11 +122,12 @@ int main(int argc, char **argv)
 
 	printf("   `- Dump succeeded, waiting 5 seconds\n");
 	sleep(5);
-	printf("Now stopping child\n");
+	printf("Stopping child (first time)\n");
 	kill(pid, SIGUSR1);
 	waitpid(pid, NULL, 0);
 
 	printf("--- Restore loop ---\n");
+	printf("Restoring (first time)\n");
 	criu_init_opts();
 	criu_set_log_level(4);
 	criu_set_shell_job(1);
@@ -139,9 +140,22 @@ int main(int argc, char **argv)
 		return -1;
 	}
 
-	printf("   `- Restore returned pid %d\n", pid);
+	//printf("   `- Restore returned pid %d\n", pid);
 	sleep(5);
-	printf("Stopping child a second and final time\n");
+	printf("Stopping child (second time)\n");
+	kill(pid, SIGUSR1);
+	waitpid(pid, NULL, 0);
+	sleep(1);
+	printf("Restoring (second time)...\n");
+	pid = criu_restore_child();
+	if (pid <= 0) {
+		what_err_ret_mean(pid);
+		return -1;
+	}
+
+	sleep(5);
+
+	printf("Stopping child (third and final time)\n");
 	kill(pid, SIGUSR1);
 err:
 	if (waitpid(pid, &ret, 0) < 0) {
