@@ -2,6 +2,10 @@
 #include <stdio.h>
 #include <sys/shm.h>
 
+/*
+Imported/Adapted from the "advanced programming in the unix environment" book.
+*/
+
 #define ARRAY_SIZE 40000
 #define MALLOC_SIZE 100000
 #define SHM_SIZE 100000
